@@ -1,0 +1,94 @@
+- name: Install ntp
+  yum: pkg=ntp state=installed
+
+- name: Enable ntp on systemd
+  systemd: name=ntpd enabled=yes masked=no state=started
+
+- name: Copy kubernetes repos
+  copy: src=virt7-docker-common-release.repo  dest=/etc/yum.repos.d/
+
+- name: Install packages and dependencies
+  yum: pkg={{item}} state=installed enablerepo=virt7-docker-common-release
+  with_items:
+   - kubernetes
+   - etcd
+   - docker
+   - flannel
+
+- name: Build hosts file
+  lineinfile: dest=/etc/hosts regexp='.*{{ item }}$' line="{{ hostvars[item].ansible_default_ipv4.address }} {{item}}" state=present
+  when: hostvars[item].ansible_default_ipv4.address is defined
+  with_items: "{{ groups.all }}"
+
+- name: configure /etc/kubernetes/config on master
+  lineinfile: path=/etc/kubernetes/config regexp='{{ item.regexp }}' line='{{ item.line }}'
+  with_items:
+    - { regexp: '^KUBE_LOGTOSTDERR=', line: 'KUBE_LOGTOSTDERR="--logtostderr=true"' }
+    - { regexp: '^KUBE_LOG_LEVEL=', line: 'KUBE_LOG_LEVEL="--v=0"' }
+    - { regexp: '^KUBE_ALLOW_PRIV=', line: 'KUBE_ALLOW_PRIV="--allow-privileged=false"' }
+    - { regexp: '^KUBE_MASTER=', line: 'KUBE_MASTER="--master=http://{{ansible_fqdn}}:8080"' }
+    - { regexp: '^KUBE_ETCD_SERVERS=', line: 'KUBE_ETCD_SERVERS="--etcd-servers=http://{{ansible_fqdn}}:2379"' }
+
+  when: "'master' in group_names"
+
+
+- name: configure /etc/etcd/etcd.conf on master
+  lineinfile: path=/etc/etcd/etcd.conf regexp='{{ item.regexp }}' line='{{ item.line }}'
+  with_items:
+    - { regexp: '^ETCD_LISTEN_CLIENT_URLS=', line: 'ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"' }
+    - { regexp: '^ETCD_ADVERTISE_CLIENT_URLS=', line: 'ETCD_ADVERTISE_CLIENT_URLS="http://0.0.0.0:2379"' }
+  when: "'master' in group_names"
+
+- name: configure /etc/kubernetes/apiserver on master
+  lineinfile: path=/etc/kubernetes/apiserver regexp='{{ item.regexp }}' line='{{ item.line }}'
+  with_items:
+    - { regexp: '^KUBE_API_ADDRESS=', line: 'KUBE_API_ADDRESS="--address=0.0.0.0"' }
+    - { regexp: '^KUBE_API_PORT=', line: 'KUBE_API_PORT="--port=8080"' }
+    - { regexp: '^KUBELET_PORT=', line: 'KUBELET_PORT="--kubelet-port=10250"' }
+    - { regexp: 'KUBE_ADMISSION_CONTROL=', line: '#KUBE_ADMISSION_CONTROL="--admission-control=NamespaceLifecycle,NamespaceExists,LimitRanger,SecurityContextDeny,ServiceAccount,ResourceQuota"' }
+  when: "'master' in group_names"
+
+- name: Enable kubernetes services on master
+  systemd: name={{item}} enabled=yes masked=no state=started
+  with_items:
+   - etcd
+   - kube-apiserver 
+   - kube-controller-manager
+   - kube-scheduler
+  when: "'master' in group_names"
+
+- name: configure /etc/kubernetes/config on minion
+  lineinfile: path=/etc/kubernetes/config regexp='{{ item.regexp }}' line='{{ item.line }}'
+  with_items:
+    - { regexp: '^KUBE_LOGTOSTDERR=', line: 'KUBE_LOGTOSTDERR="--logtostderr=true"' }
+    - { regexp: '^KUBE_LOG_LEVEL=', line: 'KUBE_LOG_LEVEL="--v=0"' }
+    - { regexp: '^KUBE_ALLOW_PRIV=', line: 'KUBE_ALLOW_PRIV="--allow-privileged=false"' }
+  when: "'minion' in group_names"
+
+- name: configure KUBE_MASTER on minion
+  lineinfile: path=/etc/kubernetes/config regexp='^KUBE_MASTER=' line='KUBE_MASTER="--master=http://{{ hostvars[item]['ansible_fqdn'] }}:8080"'
+  with_items: "{{ groups.master }}"
+  when: "'minion' in group_names"
+
+- name: configure KUBE_ETCD_SERVERS on minion
+  lineinfile: path=/etc/kubernetes/config regexp='^KUBE_ETCD_SERVERS=' line='KUBE_ETCD_SERVERS="--etcd-servers=http://{{ hostvars[item]['ansible_fqdn'] }}:2379"'
+  with_items: "{{ groups.master }}"
+  when: "'minion' in group_names"
+
+- name: configure /etc/kubernetes/kubelet on minion
+  lineinfile: path=/etc/kubernetes/kubelet regexp='{{ item.regexp }}' line='{{ item.line }}'
+  with_items:
+    - { regexp: '^KUBELET_ADDRESS=', line: 'KUBELET_ADDRESS="--address={{ ansible_eth0.ipv4.address }}"' }
+    - { regexp: '^KUBELET_PORT=', line: 'KUBELET_PORT="--port=10250"' }
+    - { regexp: '^KUBELET_HOSTNAME=', line: 'KUBELET_HOSTNAME="--hostname-override={{ansible_fqdn}}"' }
+    - { regexp: '^KUBELET_API_SERVER=', line: 'KUBELET_API_SERVER="--api-servers=http://{{ hostvars[groups["master"][0]]["ansible_fqdn"] }}:8080"' }
+    - { regexp: 'KUBELET_POD_INFRA_CONTAINER=', line: '#KUBELET_POD_INFRA_CONTAINER="--pod-infra-container-image=registry.access.redhat.com/rhel7/pod-infrastructure:latest"' }
+  when: "'minion' in group_names"
+
+- name: Enable kubernetes services on master
+  systemd: name={{item}} enabled=yes masked=no state=started
+  with_items:
+   - kube-proxy
+   - kubelet
+   - docker
+  when: "'minion' in group_names"

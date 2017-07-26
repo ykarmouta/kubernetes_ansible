@@ -1,0 +1,12 @@
+[kubernetes:children]
+master
+minion
+
+[master]
+master1.mylabserver.com
+
+
+[minion]
+minion1.mylabserver.com
+minion2.mylabserver.com
+minion3.mylabserver.com
